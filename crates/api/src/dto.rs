@@ -55,6 +55,7 @@ pub struct AgentListResponse {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateAgentRequest {
     /// Person identity this agent record belongs to.
     pub person_id: Uuid,
@@ -64,6 +65,7 @@ pub struct CreateAgentRequest {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LifecycleCommandRequest {
     /// Appointment the lifecycle operation is scoped to.
     /// Required for submit-for-activation, activate, reinstate.
@@ -102,6 +104,7 @@ pub struct IdentityLinkDto {
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LinkIdentityRequest {
     /// Identity provider name (e.g. `keycloak`).
     pub identity_provider: String,
