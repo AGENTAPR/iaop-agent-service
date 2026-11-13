@@ -25,10 +25,7 @@ impl FromRequestParts<AppState> for AuthPrincipal {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let services = state
-            .services
-            .as_ref()
-            .ok_or_else(service_unavailable)?;
+        let services = state.services.as_ref().ok_or_else(service_unavailable)?;
 
         let token = iaop_agent_service_infrastructure::security::bearer_token(
             parts

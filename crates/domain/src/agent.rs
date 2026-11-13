@@ -612,8 +612,8 @@ mod tests {
             .unwrap();
         assert_eq!(a.status(), AgentStatus::PendingActivation);
         assert_eq!(a.version(), 1);
-        let auth = auth(&a, appt, ActivationOperation::Activate);
-        a.activate(appt, &auth, &actor(), None, cmd(), now())
+        let az = auth(&a, appt, ActivationOperation::Activate);
+        a.activate(appt, &az, &actor(), None, cmd(), now())
             .unwrap();
         assert_eq!(a.status(), AgentStatus::Active);
         assert_eq!(a.version(), 2);
@@ -623,8 +623,8 @@ mod tests {
         };
         a.suspend(rsn, &actor(), None, cmd(), now()).unwrap();
         assert_eq!(a.status(), AgentStatus::Suspended);
-        let auth2 = auth(&a, appt, ActivationOperation::Reinstate);
-        a.reinstate(appt, &auth2, &actor(), None, cmd(), now())
+        let az2 = auth(&a, appt, ActivationOperation::Reinstate);
+        a.reinstate(appt, &az2, &actor(), None, cmd(), now())
             .unwrap();
         assert_eq!(a.status(), AgentStatus::Active);
         let term = TerminationReason {
@@ -650,12 +650,12 @@ mod tests {
         let appt = AppointmentId::new();
         a.submit_for_activation(appt, &actor(), None, cmd(), now())
             .unwrap();
-        let auth = auth(&a, appt, ActivationOperation::Activate);
-        a.activate(appt, &auth, &actor(), None, cmd(), now())
+        let az = auth(&a, appt, ActivationOperation::Activate);
+        a.activate(appt, &az, &actor(), None, cmd(), now())
             .unwrap();
-        let auth2 = auth(&a, appt, ActivationOperation::Activate);
+        let az2 = auth(&a, appt, ActivationOperation::Activate);
         let err = a
-            .activate(appt, &auth2, &actor(), None, cmd(), now())
+            .activate(appt, &az2, &actor(), None, cmd(), now())
             .unwrap_err();
         assert!(matches!(err, AgentError::AgentAlreadyActive(_)));
     }
@@ -670,9 +670,9 @@ mod tests {
         };
         a.terminate(term, &actor(), None, cmd(), now()).unwrap();
         let appt = AppointmentId::new();
-        let auth = auth(&a, appt, ActivationOperation::Activate);
+        let az = auth(&a, appt, ActivationOperation::Activate);
         let err = a
-            .activate(appt, &auth, &actor(), None, cmd(), now())
+            .activate(appt, &az, &actor(), None, cmd(), now())
             .unwrap_err();
         assert!(matches!(err, AgentError::AgentTerminated(_)));
     }
@@ -681,10 +681,10 @@ mod tests {
     fn invalid_transition_rejected() {
         let (mut a, _) = Agent::create(PersonId::new(), None, &actor(), now()).unwrap();
         let appt = AppointmentId::new();
-        let auth = auth(&a, appt, ActivationOperation::Activate);
+        let az = auth(&a, appt, ActivationOperation::Activate);
         // DRAFT -> ACTIVE is illegal
         let err = a
-            .activate(appt, &auth, &actor(), None, cmd(), now())
+            .activate(appt, &az, &actor(), None, cmd(), now())
             .unwrap_err();
         assert!(matches!(err, AgentError::InvalidStateTransition { .. }));
     }
@@ -695,8 +695,8 @@ mod tests {
         let appt = AppointmentId::new();
         a.submit_for_activation(appt, &actor(), None, cmd(), now())
             .unwrap();
-        let auth = auth(&a, appt, ActivationOperation::Activate);
-        a.activate(appt, &auth, &actor(), None, cmd(), now())
+        let az = auth(&a, appt, ActivationOperation::Activate);
+        a.activate(appt, &az, &actor(), None, cmd(), now())
             .unwrap();
         let err = a
             .suspend(
