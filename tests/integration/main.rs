@@ -10,9 +10,13 @@ use iaop_agent_service_infrastructure::config::AppConfig;
 use std::sync::Arc;
 
 fn test_state() -> AppState {
+    // Dev bypass keeps the smoke test independent of a live IdP.
+    // SAFETY: single-threaded test setup before any concurrent env reads.
+    unsafe { std::env::set_var("AUTH_MODE", "dev") };
     AppState {
         config: Arc::new(AppConfig::from_env().expect("test config must load")),
         db: None,
+        services: None,
     }
 }
 

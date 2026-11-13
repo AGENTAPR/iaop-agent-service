@@ -1,9 +1,20 @@
 #![forbid(unsafe_code)]
-//! Application layer for Agent Lifecycle.
+// AFIT: ports are used via generics (concrete impls), never dyn.
+// All impl futures are Send; suppression is intentional.
+#![allow(async_fn_in_trait)]
+//! Application layer for Agent Lifecycle (Agent Registry & Identity).
 //!
-//! Contains use cases (commands and queries) and the ports they depend on.
-//! Depends only on the `domain` crate — never on Axum, SQLx, or other
-//! infrastructure. Adapters in `infrastructure` implement the ports.
+//! Use cases (commands/queries) and the ports they depend on. Depends on
+//! `domain` and `sqlx` transaction types (the transaction boundary) —
+//! never on Axum, HTTP clients, or broker SDKs.
 
+pub mod commands;
+pub mod error;
+pub mod permissions;
 pub mod ports;
+pub mod principal;
+pub mod queries;
 pub mod service_info;
+
+pub use error::AppError;
+pub use principal::{Principal, TokenClaims};

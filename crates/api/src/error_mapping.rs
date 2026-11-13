@@ -8,6 +8,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use uuid::Uuid;
 
+use iaop_agent_service_application::error::AppError;
+use iaop_agent_service_domain::AgentError;
+
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -68,8 +71,92 @@ impl ApiError {
     }
 }
 
+impl From<AppError> for ApiError {
+    fn from(e: AppError) -> Self {
+        match e {
+            AppError::Domain(d) => domain_error(d),
+            AppError::AgentNotFound => ApiError::not_found(),
+            AppError::Conflict(msg) => {
+                ApiError::new(StatusCode::CONFLICT, "CONFLICT", "Conflict", msg)
+            }
+            AppError::PreconditionFailed(msg) => ApiError::new(
+                StatusCode::PRECONDITION_FAILED,
+                "PRECONDITION_FAILED",
+                "Precondition failed",
+                msg,
+            ),
+            AppError::IdempotencyConflict => ApiError::new(
+                StatusCode::CONFLICT,
+                "IDEMPOTENCY_CONFLICT",
+                "Idempotency conflict",
+                "Idempotency-Key was already used with a different request",
+            ),
+            AppError::Forbidden(msg) => {
+                ApiError::new(StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden", msg)
+            }
+            AppError::Infrastructure(err) => {
+                tracing::error!(error = %err, "infrastructure error");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "Internal error",
+                    "An unexpected error occurred",
+                )
+            }
+        }
+    }
+}
+
+fn domain_error(e: AgentError) -> ApiError {
+    match e {
+        AgentError::NotFound(_) => ApiError::not_found(),
+        AgentError::AgentAlreadyActive(_) | AgentError::AgentTerminated(_) => ApiError::new(
+            StatusCode::CONFLICT,
+            "LIFECYCLE_CONFLICT",
+            "Lifecycle conflict",
+            e.to_string(),
+        ),
+        AgentError::InvalidStateTransition { .. } => ApiError::new(
+            StatusCode::CONFLICT,
+            "INVALID_LIFECYCLE_TRANSITION",
+            "Invalid lifecycle transition",
+            e.to_string(),
+        ),
+        AgentError::InvalidAgentCode(..)
+        | AgentError::InvalidEffectiveDate(_)
+        | AgentError::MissingSuspensionReason
+        | AgentError::MissingTerminationReason
+        | AgentError::AppointmentNotValid(_)
+        | AgentError::Validation(_) => ApiError::validation(e.to_string()),
+        AgentError::ActivationNotAuthorized(_) => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "ACTIVATION_NOT_AUTHORIZED",
+            "Activation not authorized",
+            e.to_string(),
+        ),
+        AgentError::IdentityLinkConflict(_) => ApiError::new(
+            StatusCode::CONFLICT,
+            "IDENTITY_LINK_CONFLICT",
+            "Identity link conflict",
+            e.to_string(),
+        ),
+        AgentError::IdempotencyConflict => ApiError::new(
+            StatusCode::CONFLICT,
+            "IDEMPOTENCY_CONFLICT",
+            "Idempotency conflict",
+            "duplicate command",
+        ),
+        AgentError::VersionConflict { .. } => ApiError::new(
+            StatusCode::PRECONDITION_FAILED,
+            "VERSION_CONFLICT",
+            "Version conflict",
+            e.to_string(),
+        ),
+    }
+}
+
 #[derive(Serialize)]
-struct ProblemDetails {
+struct ProblemBody {
     #[serde(rename = "type")]
     problem_type: String,
     title: String,
@@ -82,7 +169,7 @@ struct ProblemDetails {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = ProblemDetails {
+        let body = ProblemBody {
             problem_type: format!(
                 "https://api.iaop.internal/problems/{}",
                 self.code.to_lowercase()

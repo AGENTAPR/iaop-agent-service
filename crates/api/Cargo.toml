@@ -18,5 +18,5 @@ tracing.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 axum.workspace = true
-utoipa.workspace = true
+utoipa = { workspace = true, features = ["uuid", "chrono"] }
 tower.workspace = true

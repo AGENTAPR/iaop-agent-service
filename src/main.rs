@@ -1,14 +1,23 @@
 //! Composition root for Agent Lifecycle.
 //!
-//! Wires configuration, persistence, and the HTTP router, then serves with
-//! graceful shutdown on SIGINT/SIGTERM.
+//! Wires configuration, persistence, domain services, the HTTP router,
+//! and the outbox publisher, then serves with graceful shutdown on
+//! SIGINT/SIGTERM.
 
 use std::sync::Arc;
 
 use anyhow::Context;
-use iaop_agent_service_api::{AppState, build_router};
+use iaop_agent_service_api::{AppState, ServicePorts, build_router};
+use iaop_agent_service_infrastructure::activation::{
+    FailClosedActivationAuthz, FixtureActivationAuthz,
+};
+use iaop_agent_service_infrastructure::agent_store::PgAgentStore;
 use iaop_agent_service_infrastructure::config::AppConfig;
+use iaop_agent_service_infrastructure::idempotency::PgIdempotencyStore;
+use iaop_agent_service_infrastructure::jwt::{DevBypassValidator, JwksTokenValidator};
+use iaop_agent_service_infrastructure::outbox;
 use iaop_agent_service_infrastructure::persistence;
+use iaop_agent_service_infrastructure::transport::LogTransport;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,9 +49,69 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // ---- wire domain services -------------------------------------------
+    let services = db.as_ref().map(|_pool| {
+        let activation = match config.activation_mode {
+            iaop_agent_service_infrastructure::config::ActivationMode::Fixture => {
+                iaop_agent_service_infrastructure::activation::ActivationAuthzImpl::Fixture(
+                    FixtureActivationAuthz::new(),
+                )
+            }
+            _ => iaop_agent_service_infrastructure::activation::ActivationAuthzImpl::FailClosed(
+                FailClosedActivationAuthz::new(),
+            ),
+        };
+        let validator = match config.auth_mode {
+            iaop_agent_service_infrastructure::config::AuthMode::DevBypass => {
+                iaop_agent_service_infrastructure::jwt::TokenValidatorImpl::Dev(DevBypassValidator)
+            }
+            _ => iaop_agent_service_infrastructure::jwt::TokenValidatorImpl::Jwks(
+                JwksTokenValidator::new(
+                    config.oidc_issuer.clone().unwrap_or_default(),
+                    config.oidc_jwks_url.clone().unwrap_or_else(|| {
+                        format!(
+                            "{}/protocol/openid-connect/certs",
+                            config.oidc_issuer.clone().unwrap_or_default()
+                        )
+                    }),
+                    config.oidc_audience.clone().unwrap_or_default(),
+                ),
+            ),
+        };
+        Arc::new(ServicePorts {
+            agent_store: PgAgentStore::new(),
+            idempotency: PgIdempotencyStore::new(),
+            activation,
+            token_validator: validator,
+        })
+    });
+
+    // ---- outbox publisher (only with DB) --------------------------------
+    if let Some(pool) = &db {
+        let publisher_pool = pool.clone();
+        let transport = Arc::new(LogTransport);
+        let poll = config.outbox_poll_interval;
+        let batch = config.outbox_batch_size;
+        let max_attempts = config.outbox_max_attempts;
+        tokio::spawn(async move {
+            let shutdown = shutdown_signal();
+            outbox::run_publisher(
+                publisher_pool,
+                transport,
+                poll,
+                batch,
+                max_attempts,
+                shutdown,
+            )
+            .await;
+        });
+        tracing::info!("outbox publisher started (log transport)");
+    }
+
     let state = AppState {
         config: Arc::new(config.clone()),
         db,
+        services,
     };
     let app = build_router(state);
 
