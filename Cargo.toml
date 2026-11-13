@@ -37,7 +37,7 @@ axum = "0.8"
 tower = "0.5"
 utoipa = "5"
 anyhow = "1"
-iaop-security = { git = "https://github.com/AGENTAPR/iaop-rust-common", rev = "0eb08344989a8af0b51705ae5531873e37ec3d0a" }
+iaop-security = { git = "https://github.com/AGENTAPR/iaop-rust-common", rev = "0cc0d461bb822bcb03c100c9922cc2ad6391b7ba" }
 
 [package]
 name = "iaop-agent-service"

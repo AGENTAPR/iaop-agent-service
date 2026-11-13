@@ -725,7 +725,7 @@ dependencies = [
 [[package]]
 name = "iaop-security"
 version = "0.1.0"
-source = "git+https://github.com/AGENTAPR/iaop-rust-common?rev=0eb08344989a8af0b51705ae5531873e37ec3d0a#0eb08344989a8af0b51705ae5531873e37ec3d0a"
+source = "git+https://github.com/AGENTAPR/iaop-rust-common?rev=0cc0d461bb822bcb03c100c9922cc2ad6391b7ba#0cc0d461bb822bcb03c100c9922cc2ad6391b7ba"
 dependencies = [
  "axum",
  "base64 0.22.1",
