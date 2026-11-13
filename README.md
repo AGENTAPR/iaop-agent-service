@@ -61,3 +61,18 @@ No business logic or service implementation exists yet.
 - Squash merges preferred; merge commits and rebases disabled
 - Pull requests required before merging into `main`
 - Topics: iaop, insurance, insurance-agents, enterprise-architecture, rust, axum, microservices, domain-driven-design, postgresql
+## Foundation implementation (2026-11)
+
+Rust/Axum microservice scaffold generated from the canonical IAOP
+template (see `iaop-rust-common/templates/axum-microservice` and
+`iaop-architecture/docs/standards/IAOP_AXUM_SERVICE_TEMPLATE.md`):
+
+- Crates: `domain`, `application`, `infrastructure`, `api` (+ `src/main.rs`)
+- Endpoints: `/health/live`, `/health/ready`, `/api/v1/system/info`, `/openapi.json`, `/docs`
+- Persistence: PostgreSQL/SQLx boundary + outbox/inbox migrations
+- Security: OIDC/JWT boundary via `iaop-security` (Keycloak)
+- Observability: structured JSON logs, correlation IDs, OTLP-ready
+- CI: `.github/workflows/main-ci.yml` — fmt/clippy/test on `main` pushes only
+- Docs: `docs/architecture.md`, `docs/database.md`, `docs/api.md`
+
+Business features are intentionally not implemented yet.
