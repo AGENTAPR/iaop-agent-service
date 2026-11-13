@@ -59,11 +59,19 @@ pub struct TokenClaims {
     #[serde(default)]
     pub realm_access: Option<RealmAccess>,
     #[serde(default)]
+    pub resource_access: Option<std::collections::HashMap<String, ClientRoles>>,
+    #[serde(default)]
     pub agent_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RealmAccess {
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientRoles {
     #[serde(default)]
     pub roles: Vec<String>,
 }

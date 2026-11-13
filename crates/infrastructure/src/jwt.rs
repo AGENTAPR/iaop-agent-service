@@ -168,7 +168,31 @@ impl TokenValidator for JwksTokenValidator {
                 .split_whitespace()
                 .map(str::to_string)
                 .collect(),
-            roles: c.realm_access.map(|r| r.roles).unwrap_or_default(),
+            roles: {
+                let mut roles = c.realm_access.map(|r| r.roles).unwrap_or_default();
+                // Merge client roles only for clients present in `aud`
+                // (resource_access can list clients the token isn't for).
+                let aud: Vec<String> = match &c.aud {
+                    Some(serde_json::Value::String(a)) => vec![a.clone()],
+                    Some(serde_json::Value::Array(a)) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    _ => vec![],
+                };
+                if let Some(ra) = &c.resource_access {
+                    for (client, cr) in ra {
+                        if aud.iter().any(|a| a == client) {
+                            for r in &cr.roles {
+                                if !roles.contains(r) {
+                                    roles.push(r.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                roles
+            },
             agent_scope: c.agent_scope,
         })
     }

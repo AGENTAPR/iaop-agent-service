@@ -219,12 +219,21 @@ pub struct TokenClaims {
     pub scope: Option<String>,
     /// Keycloak realm roles.
     pub realm_access: Option<RealmAccess>,
+    /// `aud` may be a string or array depending on the IdP.
+    pub aud: Option<serde_json::Value>,
+    /// Client roles: client_id -> roles (e.g. iaop-agent-api -> agent:activate).
+    pub resource_access: Option<std::collections::HashMap<String, ClientRoles>>,
     /// Optional agent-scope claim for future delegated access.
     pub agent_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct RealmAccess {
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ClientRoles {
     pub roles: Vec<String>,
 }
 
