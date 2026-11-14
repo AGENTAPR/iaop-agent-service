@@ -1,0 +1,51 @@
+//! Smoke integration test: the router serves health and info endpoints
+//! without a database.
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
+
+use iaop_agent_service_api::{AppState, build_router};
+use iaop_agent_service_infrastructure::config::AppConfig;
+use std::sync::Arc;
+
+fn test_state() -> AppState {
+    // Dev bypass keeps the smoke test independent of a live IdP.
+    // SAFETY: single-threaded test setup before any concurrent env reads.
+    unsafe { std::env::set_var("AUTH_MODE", "dev") };
+    AppState {
+        config: Arc::new(AppConfig::from_env().expect("test config must load")),
+        db: None,
+        services: None,
+    }
+}
+
+#[tokio::test]
+async fn health_live_returns_ok() {
+    let app = build_router(test_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health/live")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn system_info_returns_metadata() {
+    let app = build_router(test_state());
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/system/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
