@@ -79,4 +79,3 @@ mod tests {
         std::fs::write("../../target/agent_service_openapi.json", json).unwrap();
     }
 }
-

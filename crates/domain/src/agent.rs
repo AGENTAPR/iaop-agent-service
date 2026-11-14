@@ -612,8 +612,8 @@ mod tests {
             .unwrap();
         assert_eq!(a.status(), AgentStatus::PendingActivation);
         assert_eq!(a.version(), 1);
-        let auth = auth(&a, appt, ActivationOperation::Activate);
-        a.activate(appt, &auth, &actor(), None, cmd(), now())
+        let auth_act = auth(&a, appt, ActivationOperation::Activate);
+        a.activate(appt, &auth_act, &actor(), None, cmd(), now())
             .unwrap();
         assert_eq!(a.status(), AgentStatus::Active);
         assert_eq!(a.version(), 2);
@@ -650,8 +650,8 @@ mod tests {
         let appt = AppointmentId::new();
         a.submit_for_activation(appt, &actor(), None, cmd(), now())
             .unwrap();
-        let auth = auth(&a, appt, ActivationOperation::Activate);
-        a.activate(appt, &auth, &actor(), None, cmd(), now())
+        let auth1 = auth(&a, appt, ActivationOperation::Activate);
+        a.activate(appt, &auth1, &actor(), None, cmd(), now())
             .unwrap();
         let auth2 = auth(&a, appt, ActivationOperation::Activate);
         let err = a

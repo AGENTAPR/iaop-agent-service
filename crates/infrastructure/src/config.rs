@@ -30,13 +30,17 @@ pub enum ActivationMode {
     FailClosed,
     /// Test fixture returning ALLOW — refused in production.
     Fixture,
+    /// Real HTTP eligibility validation calling external eligibility service.
+    Http,
 }
 
 /// Outbox event transport.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventTransportKind {
-    /// Logs events instead of broker delivery (no broker decided yet).
+    /// Logs events instead of broker delivery (local / dev).
     Log,
+    /// Real Kafka event transport publishing to topics.
+    Kafka,
 }
 
 /// Service configuration. Secrets (e.g. DATABASE_URL) are never logged;
@@ -61,9 +65,12 @@ pub struct AppConfig {
 
     // -- activation authorization ---------------------------------------
     pub activation_mode: ActivationMode,
+    pub eligibility_service_url: Option<String>,
 
     // -- events ---------------------------------------------------------
     pub event_transport: EventTransportKind,
+    pub kafka_brokers: Option<String>,
+    pub kafka_topic_prefix: Option<String>,
     pub outbox_poll_interval: Duration,
     pub outbox_batch_size: i64,
     pub outbox_max_attempts: i32,
@@ -107,6 +114,7 @@ impl AppConfig {
         let activation_mode = match env_or("ACTIVATION_MODE", "fail_closed").as_str() {
             "fail_closed" => ActivationMode::FailClosed,
             "fixture" => ActivationMode::Fixture,
+            "http" => ActivationMode::Http,
             other => {
                 return Err(ConfigError::InvalidValue(
                     "ACTIVATION_MODE",
@@ -119,6 +127,17 @@ impl AppConfig {
                 "ACTIVATION_MODE=fixture is forbidden when ENVIRONMENT=production".into(),
             ));
         }
+
+        let event_transport = match env_or("EVENT_TRANSPORT", "log").as_str() {
+            "log" => EventTransportKind::Log,
+            "kafka" => EventTransportKind::Kafka,
+            other => {
+                return Err(ConfigError::InvalidValue(
+                    "EVENT_TRANSPORT",
+                    format!("unknown transport '{other}'"),
+                ));
+            }
+        };
 
         Ok(Self {
             service_name: env_or("SERVICE_NAME", "iaop-agent-service"),
@@ -137,7 +156,16 @@ impl AppConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
             activation_mode,
-            event_transport: EventTransportKind::Log,
+            eligibility_service_url: std::env::var("ELIGIBILITY_SERVICE_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            event_transport,
+            kafka_brokers: std::env::var("KAFKA_BROKERS")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            kafka_topic_prefix: std::env::var("KAFKA_TOPIC_PREFIX")
+                .ok()
+                .filter(|s| !s.is_empty()),
             outbox_poll_interval: Duration::from_millis(env_parse("OUTBOX_POLL_MS", 1000)?),
             outbox_batch_size: env_parse("OUTBOX_BATCH_SIZE", 50)?,
             outbox_max_attempts: env_parse("OUTBOX_MAX_ATTEMPTS", 10)?,

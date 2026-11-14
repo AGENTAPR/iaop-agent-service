@@ -1,13 +1,14 @@
-//! Transactional outbox publisher.
+//! Transactional outbox publisher with multi-instance lease locking.
 //!
-//! Claims unpublished rows with `FOR UPDATE SKIP LOCKED`, delivers via
-//! the configured [`EventTransport`], and marks `published_at` or
-//! schedules a retry with exponential backoff + jitter. Delivery is
-//! at-least-once — consumers must deduplicate (inbox table).
+//! Claims unpublished rows using atomic `UPDATE ... RETURNING` with lease timestamps
+//! and `FOR UPDATE SKIP LOCKED`. Delivers via the configured [`EventTransport`], and
+//! marks `published_at` or schedules a retry with exponential backoff + jitter.
+//! Delivery is at-least-once â€” consumers must deduplicate (inbox table).
 //!
-//! No broker is locked in yet: `LogTransport` is the default. The
-//! publisher never holds a business transaction open across network
-//! calls — claiming uses a short dedicated transaction per batch.
+//! The publisher never holds a business transaction open across network calls â€”
+//! claiming uses a short dedicated transaction per batch, holding a durable lease
+//! (`locked_until` / `locked_by`) so other instances cannot claim the same events
+//! while network delivery is in flight.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,34 +16,48 @@ use std::time::Duration;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use tracing::{debug, error, info, warn};
 
-use iaop_agent_service_application::error::AppError;
 use iaop_agent_service_application::ports::{EventTransport, IntegrationEvent};
 
 /// One claimed outbox row ready for delivery.
-struct ClaimedEvent {
-    event_id: uuid::Uuid,
-    attempts: i32,
-    event: IntegrationEvent,
+pub struct ClaimedEvent {
+    pub event_id: uuid::Uuid,
+    pub attempts: i32,
+    pub event: IntegrationEvent,
 }
 
-/// Claims up to `batch_size` due events inside `tx`.
+/// Claims up to `batch_size` due events inside `tx` with an atomic lease.
 async fn claim_batch(
     tx: &mut Transaction<'_, Postgres>,
+    instance_id: &str,
+    lease_duration_secs: i64,
     batch_size: i64,
 ) -> Result<Vec<ClaimedEvent>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT event_id, aggregate_id, aggregate_type, aggregate_version, event_type, \
-         event_version, payload, occurred_at, source, correlation_id, causation_id, publish_attempts \
-         FROM outbox_events \
-         WHERE published_at IS NULL \
-           AND (next_attempt_at IS NULL OR next_attempt_at <= now()) \
-         ORDER BY created_at \
-         LIMIT $1 \
-         FOR UPDATE SKIP LOCKED",
-    )
-    .bind(batch_size)
-    .fetch_all(&mut **tx)
-    .await?;
+    let lease_interval = format!("{} seconds", lease_duration_secs);
+    let sql = format!(
+        "UPDATE outbox_events \
+         SET locked_until = now() + interval '{lease}', \
+             locked_by = $1, \
+             publish_attempts = publish_attempts + 1 \
+         WHERE event_id IN ( \
+             SELECT event_id \
+             FROM outbox_events \
+             WHERE published_at IS NULL \
+               AND (locked_until IS NULL OR locked_until < now()) \
+               AND (next_attempt_at IS NULL OR next_attempt_at <= now()) \
+             ORDER BY created_at \
+             LIMIT $2 \
+             FOR UPDATE SKIP LOCKED \
+         ) \
+         RETURNING event_id, aggregate_id, aggregate_type, aggregate_version, event_type, \
+                   event_version, payload, occurred_at, source, correlation_id, causation_id, publish_attempts",
+        lease = lease_interval
+    );
+
+    let rows = sqlx::query(&sql)
+        .bind(instance_id)
+        .bind(batch_size)
+        .fetch_all(&mut **tx)
+        .await?;
 
     rows.iter()
         .map(|r| {
@@ -73,21 +88,24 @@ async fn claim_batch(
         .collect()
 }
 
-/// Marks an event published.
+/// Marks an event published and clears the lease.
 async fn mark_published(
     tx: &mut Transaction<'_, Postgres>,
     event_id: uuid::Uuid,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE outbox_events SET published_at=now() WHERE event_id=$1")
-        .bind(event_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query(
+        "UPDATE outbox_events \
+         SET published_at = now(), locked_until = NULL, locked_by = NULL \
+         WHERE event_id = $1",
+    )
+    .bind(event_id)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
-/// Schedules a retry with exponential backoff + jitter, or leaves the
-/// row unpublished after `max_attempts` (terminal failure — visible via
-/// backlog metrics, never silently dropped).
+/// Schedules a retry with exponential backoff + jitter and releases lease,
+/// or marks terminal failure after `max_attempts`.
 async fn mark_retry(
     tx: &mut Transaction<'_, Postgres>,
     event_id: uuid::Uuid,
@@ -98,8 +116,11 @@ async fn mark_retry(
     if attempts >= max_attempts {
         // Terminal: stop scheduling; row stays unpublished for operators.
         sqlx::query(
-            "UPDATE outbox_events SET last_error=$2, publish_attempts=$3, \
-             next_attempt_at = now() + interval '100 years' WHERE event_id=$1",
+            "UPDATE outbox_events \
+             SET last_error = $2, publish_attempts = $3, \
+                 next_attempt_at = now() + interval '100 years', \
+                 locked_until = NULL, locked_by = NULL \
+             WHERE event_id = $1",
         )
         .bind(event_id)
         .bind(error)
@@ -113,8 +134,10 @@ async fn mark_retry(
     let jitter_ms = (uuid::Uuid::now_v7().as_u128() % 1000) as u64;
     let delay = Duration::from_secs(base) + Duration::from_millis(jitter_ms);
     sqlx::query(
-        "UPDATE outbox_events SET last_error=$2, publish_attempts=$3, next_attempt_at=$4 \
-         WHERE event_id=$1",
+        "UPDATE outbox_events \
+         SET last_error = $2, publish_attempts = $3, next_attempt_at = $4, \
+             locked_until = NULL, locked_by = NULL \
+         WHERE event_id = $1",
     )
     .bind(event_id)
     .bind(error)
@@ -125,9 +148,7 @@ async fn mark_retry(
     Ok(())
 }
 
-/// Runs the publisher loop until `shutdown` resolves. Each iteration:
-/// claim a batch in a short tx, deliver outside any tx, then record
-/// outcomes in a second short tx.
+/// Runs the publisher loop until `shutdown` resolves.
 pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
     pool: PgPool,
     transport: Arc<T>,
@@ -136,7 +157,12 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
     max_attempts: i32,
     shutdown: impl std::future::Future<Output = ()>,
 ) {
+    let instance_id = format!("agent-pub-{}", uuid::Uuid::now_v7());
+    let lease_duration_secs = 30i64;
     let mut shutdown = std::pin::pin!(shutdown);
+
+    info!(instance_id = %instance_id, "outbox publisher started with atomic leasing");
+
     loop {
         tokio::select! {
             _ = &mut shutdown => {
@@ -146,7 +172,7 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
             _ = tokio::time::sleep(poll_interval) => {}
         }
 
-        // 1) Claim batch in a short transaction.
+        // 1) Claim batch with durable atomic lease.
         let claimed = {
             let mut tx = match pool.begin().await {
                 Ok(t) => t,
@@ -155,9 +181,8 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
                     continue;
                 }
             };
-            match claim_batch(&mut tx, batch_size).await {
+            match claim_batch(&mut tx, &instance_id, lease_duration_secs, batch_size).await {
                 Ok(events) => {
-                    // Commit releases row locks; delivery happens after.
                     if let Err(e) = tx.commit().await {
                         error!(error = %e, "outbox claim commit failed");
                         continue;
@@ -178,52 +203,47 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
         }
 
         // 2) Deliver each event outside any DB transaction.
-        for c in claimed {
-            match transport.deliver(&c.event).await {
+        for item in claimed {
+            let res = transport.deliver(&item.event).await;
+
+            let mut tx = match pool.begin().await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!(error = %e, event_id = %item.event_id, "outbox outcome begin tx failed");
+                    continue;
+                }
+            };
+
+            match res {
                 Ok(()) => {
-                    let mut tx = match pool.begin().await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(error = %e, "outbox mark-published begin failed");
-                            continue;
-                        }
-                    };
-                    if let Err(e) = mark_published(&mut tx, c.event_id).await {
-                        error!(error = %e, event_id = %c.event_id, "mark published failed");
+                    if let Err(e) = mark_published(&mut tx, item.event_id).await {
+                        error!(error = %e, event_id = %item.event_id, "mark_published failed");
                     } else if let Err(e) = tx.commit().await {
-                        error!(error = %e, "mark published commit failed");
+                        error!(error = %e, event_id = %item.event_id, "mark_published commit failed");
                     } else {
-                        info!(event_id = %c.event_id, event_type = %c.event.event_type, "outbox event delivered");
+                        info!(
+                            event_id = %item.event_id,
+                            event_type = %item.event.event_type,
+                            "outbox event successfully delivered"
+                        );
                     }
                 }
                 Err(err) => {
-                    warn!(event_id = %c.event_id, error = %err, "outbox delivery failed; scheduling retry");
-                    let mut tx = match pool.begin().await {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(error = %e, "outbox mark-retry begin failed");
-                            continue;
-                        }
-                    };
-                    let attempts = c.attempts + 1;
+                    warn!(
+                        event_id = %item.event_id,
+                        error = %err,
+                        attempts = item.attempts,
+                        "outbox delivery failed; scheduling retry"
+                    );
                     if let Err(e) =
-                        mark_retry(&mut tx, c.event_id, attempts, max_attempts, &err).await
+                        mark_retry(&mut tx, item.event_id, item.attempts, max_attempts, &err).await
                     {
-                        error!(error = %e, "mark retry failed");
+                        error!(error = %e, event_id = %item.event_id, "mark_retry failed");
                     } else if let Err(e) = tx.commit().await {
-                        error!(error = %e, "mark retry commit failed");
+                        error!(error = %e, event_id = %item.event_id, "mark_retry commit failed");
                     }
                 }
             }
         }
     }
-}
-
-/// Outbox backlog depth for metrics/health reporting.
-pub async fn backlog_depth(pool: &PgPool) -> Result<i64, AppError> {
-    let row = sqlx::query("SELECT count(*) AS n FROM outbox_events WHERE published_at IS NULL")
-        .fetch_one(pool)
-        .await
-        .map_err(AppError::infra)?;
-    row.try_get::<i64, _>("n").map_err(AppError::infra)
 }

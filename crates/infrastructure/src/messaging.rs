@@ -32,7 +32,7 @@ mod tests {
             event_type: "agent.activated".into(),
             event_version: 1,
             source: "test".into(),
-            aggregate_id: None,
+            aggregate_id: Uuid::now_v7(),
             aggregate_version: None,
             occurred_at: Utc::now(),
             correlation_id: None,

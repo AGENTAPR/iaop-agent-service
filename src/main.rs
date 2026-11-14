@@ -17,7 +17,6 @@ use iaop_agent_service_infrastructure::idempotency::PgIdempotencyStore;
 use iaop_agent_service_infrastructure::jwt::{DevBypassValidator, JwksTokenValidator};
 use iaop_agent_service_infrastructure::outbox;
 use iaop_agent_service_infrastructure::persistence;
-use iaop_agent_service_infrastructure::transport::LogTransport;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -57,6 +56,17 @@ async fn main() -> anyhow::Result<()> {
                     FixtureActivationAuthz::new(),
                 )
             }
+            iaop_agent_service_infrastructure::config::ActivationMode::Http => {
+                let url = config
+                    .eligibility_service_url
+                    .as_deref()
+                    .unwrap_or("http://iaop-eligibility-service:8080");
+                iaop_agent_service_infrastructure::activation::ActivationAuthzImpl::Http(
+                    iaop_agent_service_infrastructure::activation::HttpEligibilityAuthz::new(
+                        url.to_string(),
+                    ),
+                )
+            }
             _ => iaop_agent_service_infrastructure::activation::ActivationAuthzImpl::FailClosed(
                 FailClosedActivationAuthz::new(),
             ),
@@ -89,7 +99,25 @@ async fn main() -> anyhow::Result<()> {
     // ---- outbox publisher (only with DB) --------------------------------
     if let Some(pool) = &db {
         let publisher_pool = pool.clone();
-        let transport = Arc::new(LogTransport);
+        let transport = Arc::new(match config.event_transport {
+            iaop_agent_service_infrastructure::config::EventTransportKind::Kafka => {
+                let brokers = config
+                    .kafka_brokers
+                    .clone()
+                    .unwrap_or_else(|| "127.0.0.1:9092".to_string());
+                iaop_agent_service_infrastructure::transport::ConfiguredTransport::Kafka(
+                    iaop_agent_service_infrastructure::transport::KafkaTransport::new(
+                        brokers,
+                        config.kafka_topic_prefix.clone(),
+                    ),
+                )
+            }
+            iaop_agent_service_infrastructure::config::EventTransportKind::Log => {
+                iaop_agent_service_infrastructure::transport::ConfiguredTransport::Log(
+                    iaop_agent_service_infrastructure::transport::LogTransport,
+                )
+            }
+        });
         let poll = config.outbox_poll_interval;
         let batch = config.outbox_batch_size;
         let max_attempts = config.outbox_max_attempts;
@@ -105,7 +133,7 @@ async fn main() -> anyhow::Result<()> {
             )
             .await;
         });
-        tracing::info!("outbox publisher started (log transport)");
+        tracing::info!("outbox publisher started");
     }
 
     let state = AppState {
