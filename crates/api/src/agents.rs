@@ -223,7 +223,7 @@ pub async fn list_agents(
 #[utoipa::path(
     get,
     path = "/api/v1/agents/{id}",
-    operation_id = "Agent:read",
+    operation_id = "Agent:getById",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(
@@ -262,7 +262,7 @@ pub async fn get_agent(
 #[utoipa::path(
     get,
     path = "/api/v1/agents/code/{code}",
-    operation_id = "Agent:read",
+    operation_id = "Agent:getByCode",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(
@@ -476,7 +476,7 @@ fn default_history_limit() -> i64 {
 #[utoipa::path(
     get,
     path = "/api/v1/agents/{id}/appointments",
-    operation_id = "Agent:read",
+    operation_id = "Agent:getAppointments",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(
@@ -520,7 +520,7 @@ pub async fn agent_appointments(
 #[utoipa::path(
     get,
     path = "/api/v1/agents/{id}/identity-links",
-    operation_id = "Agent:read",
+    operation_id = "Agent:getIdentityLinks",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(
@@ -564,7 +564,7 @@ pub async fn agent_identity_links(
 #[utoipa::path(
     post,
     path = "/api/v1/agents/{id}/identity-links",
-    operation_id = "Agent:identity:link",
+    operation_id = "Agent:linkIdentity",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(
@@ -610,7 +610,7 @@ pub async fn link_identity(
 #[utoipa::path(
     delete,
     path = "/api/v1/agents/{id}/identity-links/{link_id}",
-    operation_id = "Agent:identity:link",
+    operation_id = "Agent:unlinkIdentity",
     tag = "agents",
     security(("bearerAuth" = [])),
     responses(

@@ -68,3 +68,15 @@ impl utoipa::Modify for SecurityAddon {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dump_openapi_spec() {
+        let json = ApiDoc::openapi().to_pretty_json().unwrap();
+        std::fs::write("../../target/agent_service_openapi.json", json).unwrap();
+    }
+}
+
