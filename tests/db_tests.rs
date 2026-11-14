@@ -85,6 +85,11 @@ async fn outbox_lease_claiming_fenced_completion_and_poison_handling() {
     let pool = pool().await;
     let event_id = Uuid::now_v7();
 
+    // Clean any prior leftover test events
+    let _ = sqlx::query("DELETE FROM outbox_events WHERE event_type = 'agent.registered.v1'")
+        .execute(&pool)
+        .await;
+
     // Insert an unpublished test event
     sqlx::query(
         r#"

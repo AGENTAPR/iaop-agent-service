@@ -789,6 +789,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "iaop-security"
+version = "0.1.0"
+source = "git+https://github.com/AGENTAPR/iaop-rust-common?branch=main#7402c86beca33ab5b492a01f0a0a77444d626e58"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "http-body-util",
+ "jsonwebtoken",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tower",
+]
+
+[[package]]
 name = "iaop_agent_service-api"
 version = "0.1.0"
 dependencies = [
@@ -838,6 +855,7 @@ name = "iaop_agent_service-infrastructure"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "iaop-security",
  "iaop_agent_service-application",
  "iaop_agent_service-domain",
  "jsonwebtoken",

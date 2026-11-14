@@ -649,3 +649,65 @@ pub async fn unlink_identity(
     .await;
     run_cmd(result).await
 }
+
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ResolveIdentityQuery {
+    pub issuer: String,
+    pub subject: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/identity-links/resolve",
+    operation_id = "Agent:resolveIdentity",
+    tag = "agents",
+    params(ResolveIdentityQuery),
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Resolved active identity link", body = IdentityLinkDto),
+        (status = 401, description = "Unauthenticated", body = ProblemDetails),
+        (status = 403, description = "Forbidden", body = ProblemDetails),
+        (status = 404, description = "Not found", body = ProblemDetails)
+    )
+)]
+pub async fn resolve_identity(
+    State(state): State<AppState>,
+    AuthPrincipal(principal): AuthPrincipal,
+    Query(q): Query<ResolveIdentityQuery>,
+) -> Result<Json<IdentityLinkDto>, ApiError> {
+    let svc = services(&state)?;
+    // Allow if caller has read permission OR caller is resolving their own subject
+    if !has_permission(&principal, Permission::Read)
+        && !has_permission(&principal, Permission::IdentityLink)
+        && principal.subject != q.subject
+    {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "Forbidden",
+            "insufficient permission to resolve identity",
+        ));
+    }
+    let opt =
+        queries::resolve_identity_link(pool(&state)?, &svc.agent_store, &q.issuer, &q.subject)
+            .await?;
+
+    match opt {
+        Some(l) => Ok(Json(IdentityLinkDto {
+            id: l.id,
+            agent_id: l.agent_id,
+            identity_provider: l.identity_provider,
+            issuer: l.issuer,
+            subject: l.subject,
+            status: l.status,
+            linked_at: l.linked_at,
+            unlinked_at: l.unlinked_at,
+        })),
+        None => Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "NOT_FOUND",
+            "Not found",
+            "active identity link not found for issuer and subject",
+        )),
+    }
+}

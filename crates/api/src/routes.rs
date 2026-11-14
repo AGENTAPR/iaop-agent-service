@@ -64,6 +64,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/agents/{id}/identity-links/{link_id}",
             axum::routing::delete(crate::agents::unlink_identity),
+        )
+        .route(
+            "/api/v1/identity-links/resolve",
+            get(crate::agents::resolve_identity),
         );
 
     Router::new()

@@ -125,3 +125,16 @@ pub async fn get_agent_identity_links(
     let rows = store.list_identity_links(pool, agent_id).await?;
     Ok(rows.iter().map(IdentityLinkView::from).collect())
 }
+
+/// Resolves an active identity link by issuer + subject.
+pub async fn resolve_identity_link(
+    pool: &PgPool,
+    store: &impl AgentStore,
+    issuer: &str,
+    subject: &str,
+) -> Result<Option<IdentityLinkView>, AppError> {
+    let link = store
+        .find_identity_link_by_subject(pool, issuer, subject)
+        .await?;
+    Ok(link.as_ref().map(IdentityLinkView::from))
+}

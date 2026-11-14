@@ -33,6 +33,7 @@ use crate::dto::*;
         crate::agents::agent_identity_links,
         crate::agents::link_identity,
         crate::agents::unlink_identity,
+        crate::agents::resolve_identity,
     ),
     components(schemas(
         HealthResponse,
