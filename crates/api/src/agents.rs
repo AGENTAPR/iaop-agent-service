@@ -50,6 +50,63 @@ fn require(
     }
 }
 
+
+/// Realm roles whose holders may read any agent record (staff scopes).
+/// Self-service agents hold only `agent:*` client permissions and must
+/// pass the self-or-scope check in [`authorize_agent_read`].
+const STAFF_AGENT_READ_ROLES: &[&str] = &[
+    "PLATFORM_ADMIN",
+    "AGENT_ADMIN",
+    "AGENT_OPERATIONS",
+    "AGENT_LIFECYCLE_OFFICER",
+    "AGENT_AUDITOR",
+];
+
+fn is_staff_reader(p: &iaop_agent_service_application::Principal) -> bool {
+    p.roles
+        .iter()
+        .any(|r| STAFF_AGENT_READ_ROLES.contains(&r.as_str()))
+}
+
+/// Resource-level read authorization: Authentication + Permission +
+/// Resource Scope. Staff roles read any agent; self-service callers may
+/// only read their own agent record, proven by an ACTIVE identity link
+/// binding issuer+subject to the target agent_id. Org-wide manager
+/// scoping requires agency membership data and remains a documented
+/// gap — non-staff callers are denied rather than assumed.
+async fn authorize_agent_read(
+    state: &AppState,
+    principal: &iaop_agent_service_application::Principal,
+    target_agent_id: uuid::Uuid,
+) -> Result<(), ApiError> {
+    require(state, principal, Permission::Read)?;
+    if is_staff_reader(principal) {
+        return Ok(());
+    }
+    let link = queries::resolve_identity_link(
+        pool(state)?,
+        &services(state)?.agent_store,
+        &principal.issuer,
+        &principal.subject,
+    )
+    .await?;
+    match link {
+        Some(l)
+            if l.status.eq_ignore_ascii_case("ACTIVE")
+                && l.unlinked_at.is_none()
+                && l.agent_id == target_agent_id =>
+        {
+            Ok(())
+        }
+        _ => Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "Forbidden",
+            "agent record is outside caller scope",
+        )),
+    }
+}
+
 fn idem_key(headers: &HeaderMap) -> Result<String, ApiError> {
     headers
         .get(IDEMPOTENCY_HEADER)
@@ -193,6 +250,14 @@ pub async fn list_agents(
     Query(params): Query<ListParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     require(&state, &principal, Permission::Read)?;
+    if !is_staff_reader(&principal) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "Forbidden",
+            "agent registry listing requires a staff scope",
+        ));
+    }
     let limit = params.limit.clamp(1, 100);
     let mut agents = queries::list_agents(
         pool(&state)?,
@@ -241,7 +306,7 @@ pub async fn get_agent(
     AuthPrincipal(principal): AuthPrincipal,
     Path(agent_id): Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require(&state, &principal, Permission::Read)?;
+    authorize_agent_read(&state, &principal, agent_id).await?;
     let agent = queries::get_agent_by_id(
         pool(&state)?,
         &services(&state)?.agent_store,
@@ -284,6 +349,7 @@ pub async fn get_agent_by_code(
     let agent = queries::get_agent_by_code(pool(&state)?, &services(&state)?.agent_store, &code)
         .await?
         .ok_or_else(ApiError::not_found)?;
+    authorize_agent_read(&state, &principal, agent.id).await?;
     Ok(Json(AgentViewDto {
         id: agent.id,
         person_id: agent.person_id,
@@ -437,6 +503,7 @@ pub async fn lifecycle_history(
     Query(params): Query<HistoryParams>,
 ) -> Result<impl IntoResponse, ApiError> {
     require(&state, &principal, Permission::HistoryRead)?;
+    authorize_agent_read(&state, &principal, agent_id).await?;
     let items = queries::get_lifecycle_history(
         pool(&state)?,
         &services(&state)?.agent_store,
@@ -494,7 +561,7 @@ pub async fn agent_appointments(
     AuthPrincipal(principal): AuthPrincipal,
     Path(agent_id): Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require(&state, &principal, Permission::Read)?;
+    authorize_agent_read(&state, &principal, agent_id).await?;
     let rows = queries::get_agent_appointments(
         pool(&state)?,
         &services(&state)?.agent_store,
@@ -538,7 +605,7 @@ pub async fn agent_identity_links(
     AuthPrincipal(principal): AuthPrincipal,
     Path(agent_id): Path<uuid::Uuid>,
 ) -> Result<impl IntoResponse, ApiError> {
-    require(&state, &principal, Permission::Read)?;
+    authorize_agent_read(&state, &principal, agent_id).await?;
     let rows = queries::get_agent_identity_links(
         pool(&state)?,
         &services(&state)?.agent_store,
