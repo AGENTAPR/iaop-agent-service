@@ -50,7 +50,6 @@ fn require(
     }
 }
 
-
 /// Realm roles whose holders may read any agent record (staff scopes).
 /// Self-service agents hold only `agent:*` client permissions and must
 /// pass the self-or-scope check in [`authorize_agent_read`].
