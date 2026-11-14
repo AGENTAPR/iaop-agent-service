@@ -19,3 +19,4 @@ tokio.workspace = true
 sqlx.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 jsonwebtoken = "9"
+rskafka.workspace = true

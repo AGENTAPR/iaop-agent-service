@@ -1,11 +1,12 @@
-//! Transactional outbox publisher with multi-instance lease locking.
+//! Transactional outbox publisher with multi-instance lease locking and fencing.
 //!
 //! Claims unpublished rows using atomic `UPDATE ... RETURNING` with lease timestamps
 //! and `FOR UPDATE SKIP LOCKED`. Delivers via the configured [`EventTransport`], and
-//! marks `published_at` or schedules a retry with exponential backoff + jitter.
-//! Delivery is at-least-once â€” consumers must deduplicate (inbox table).
+//! marks `published_at` with strict lease fencing, or schedules a retry with exponential
+//! backoff + jitter. Terminal poison messages are explicitly flagged (`is_terminal = true`).
+//! Delivery is at-least-once — consumers must deduplicate (inbox table).
 //!
-//! The publisher never holds a business transaction open across network calls â€”
+//! The publisher never holds a business transaction open across network calls —
 //! claiming uses a short dedicated transaction per batch, holding a durable lease
 //! (`locked_until` / `locked_by`) so other instances cannot claim the same events
 //! while network delivery is in flight.
@@ -26,7 +27,7 @@ pub struct ClaimedEvent {
 }
 
 /// Claims up to `batch_size` due events inside `tx` with an atomic lease.
-async fn claim_batch(
+pub async fn claim_batch(
     tx: &mut Transaction<'_, Postgres>,
     instance_id: &str,
     lease_duration_secs: i64,
@@ -42,6 +43,7 @@ async fn claim_batch(
              SELECT event_id \
              FROM outbox_events \
              WHERE published_at IS NULL \
+               AND (is_terminal = FALSE) \
                AND (locked_until IS NULL OR locked_until < now()) \
                AND (next_attempt_at IS NULL OR next_attempt_at <= now()) \
              ORDER BY created_at \
@@ -70,7 +72,9 @@ async fn claim_batch(
                 source: r
                     .try_get::<Option<String>, _>("source")?
                     .unwrap_or_default(),
-                aggregate_id: r.try_get("aggregate_id")?,
+                aggregate_id: r
+                    .try_get::<Option<uuid::Uuid>, _>("aggregate_id")?
+                    .unwrap_or(r.try_get("event_id")?),
                 aggregate_version: r
                     .try_get::<Option<i64>, _>("aggregate_version")?
                     .map(|v| v as u64),
@@ -88,64 +92,87 @@ async fn claim_batch(
         .collect()
 }
 
-/// Marks an event published and clears the lease.
-async fn mark_published(
+/// Marks an event published and clears the lease with strict fencing.
+pub async fn mark_published(
     tx: &mut Transaction<'_, Postgres>,
     event_id: uuid::Uuid,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(
+    instance_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(
         "UPDATE outbox_events \
          SET published_at = now(), locked_until = NULL, locked_by = NULL \
-         WHERE event_id = $1",
+         WHERE event_id = $1 AND locked_by = $2",
     )
     .bind(event_id)
+    .bind(instance_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+
+    let fenced = result.rows_affected() > 0;
+    if !fenced {
+        warn!(
+            event_id = %event_id,
+            instance_id = %instance_id,
+            "outbox lease fencing: lease was lost or expired before completion"
+        );
+    }
+    Ok(fenced)
 }
 
 /// Schedules a retry with exponential backoff + jitter and releases lease,
-/// or marks terminal failure after `max_attempts`.
-async fn mark_retry(
+/// or marks terminal failure after `max_attempts` with explicit `is_terminal = true`.
+pub async fn mark_retry(
     tx: &mut Transaction<'_, Postgres>,
     event_id: uuid::Uuid,
+    instance_id: &str,
     attempts: i32,
     max_attempts: i32,
     error: &str,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
     if attempts >= max_attempts {
-        // Terminal: stop scheduling; row stays unpublished for operators.
-        sqlx::query(
+        // Explicit terminal poison event: no 100-year synthetic hack; requires operator replay.
+        let result = sqlx::query(
             "UPDATE outbox_events \
              SET last_error = $2, publish_attempts = $3, \
-                 next_attempt_at = now() + interval '100 years', \
+                 is_terminal = TRUE, next_attempt_at = NULL, \
                  locked_until = NULL, locked_by = NULL \
-             WHERE event_id = $1",
+             WHERE event_id = $1 AND locked_by = $4",
         )
         .bind(event_id)
         .bind(error)
         .bind(attempts)
+        .bind(instance_id)
         .execute(&mut **tx)
         .await?;
-        return Ok(());
+
+        warn!(
+            event_id = %event_id,
+            attempts = attempts,
+            error = %error,
+            "outbox event reached max_attempts; marked as terminal poison event"
+        );
+        return Ok(result.rows_affected() > 0);
     }
+
     // backoff = 2^attempts seconds, capped at 5min, + up to 1s jitter
     let base = 2u64.saturating_pow(attempts.max(0) as u32).min(300);
     let jitter_ms = (uuid::Uuid::now_v7().as_u128() % 1000) as u64;
     let delay = Duration::from_secs(base) + Duration::from_millis(jitter_ms);
-    sqlx::query(
+    let result = sqlx::query(
         "UPDATE outbox_events \
          SET last_error = $2, publish_attempts = $3, next_attempt_at = $4, \
              locked_until = NULL, locked_by = NULL \
-         WHERE event_id = $1",
+         WHERE event_id = $1 AND locked_by = $5",
     )
     .bind(event_id)
     .bind(error)
     .bind(attempts)
     .bind(chrono::Utc::now() + chrono::Duration::from_std(delay).unwrap_or_default())
+    .bind(instance_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+
+    Ok(result.rows_affected() > 0)
 }
 
 /// Runs the publisher loop until `shutdown` resolves.
@@ -216,16 +243,26 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
 
             match res {
                 Ok(()) => {
-                    if let Err(e) = mark_published(&mut tx, item.event_id).await {
-                        error!(error = %e, event_id = %item.event_id, "mark_published failed");
-                    } else if let Err(e) = tx.commit().await {
-                        error!(error = %e, event_id = %item.event_id, "mark_published commit failed");
-                    } else {
-                        info!(
-                            event_id = %item.event_id,
-                            event_type = %item.event.event_type,
-                            "outbox event successfully delivered"
-                        );
+                    match mark_published(&mut tx, item.event_id, &instance_id).await {
+                        Ok(true) => {
+                            if let Err(e) = tx.commit().await {
+                                error!(error = %e, event_id = %item.event_id, "mark_published commit failed");
+                            } else {
+                                info!(
+                                    event_id = %item.event_id,
+                                    event_type = %item.event.event_type,
+                                    "outbox event successfully delivered and marked published"
+                                );
+                            }
+                        }
+                        Ok(false) => {
+                            // Lease lost/expired
+                            let _ = tx.rollback().await;
+                        }
+                        Err(e) => {
+                            error!(error = %e, event_id = %item.event_id, "mark_published query failed");
+                            let _ = tx.rollback().await;
+                        }
                     }
                 }
                 Err(err) => {
@@ -235,12 +272,25 @@ pub async fn run_publisher<T: EventTransport + Send + Sync + 'static>(
                         attempts = item.attempts,
                         "outbox delivery failed; scheduling retry"
                     );
-                    if let Err(e) =
-                        mark_retry(&mut tx, item.event_id, item.attempts, max_attempts, &err).await
+                    match mark_retry(
+                        &mut tx,
+                        item.event_id,
+                        &instance_id,
+                        item.attempts,
+                        max_attempts,
+                        &err,
+                    )
+                    .await
                     {
-                        error!(error = %e, event_id = %item.event_id, "mark_retry failed");
-                    } else if let Err(e) = tx.commit().await {
-                        error!(error = %e, event_id = %item.event_id, "mark_retry commit failed");
+                        Ok(_) => {
+                            if let Err(e) = tx.commit().await {
+                                error!(error = %e, event_id = %item.event_id, "mark_retry commit failed");
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, event_id = %item.event_id, "mark_retry query failed");
+                            let _ = tx.rollback().await;
+                        }
                     }
                 }
             }
