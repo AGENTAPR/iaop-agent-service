@@ -93,6 +93,7 @@ impl TokenValidator for DevBypassValidator {
 }
 
 /// Concrete validator selected by configuration (dev bypass vs JWKS).
+#[allow(clippy::large_enum_variant)]
 pub enum TokenValidatorImpl {
     Dev(DevBypassValidator),
     Jwks(JwksTokenValidator),
