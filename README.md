@@ -50,10 +50,31 @@ Rust, Axum, PostgreSQL
 
 ## Status
 
-**INITIALIZED - NOT IMPLEMENTED**
+**IMPLEMENTED — DEV VERIFIED (as of 2026-11-15, `development`)**
 
-This repository has been bootstrapped with baseline documentation and configuration only.
-No business logic or service implementation exists yet.
+The Agent Lifecycle bounded context is implemented and deployed on InstaBox DEV:
+
+- Agent registry: create/list/get by ID and agent code, cursor pagination,
+  duplicate-code prevention, optimistic concurrency (`version`), audit history.
+- Agent lifecycle state machine: `DRAFT → PENDING_ACTIVATION → ACTIVE`,
+  plus `SUSPENDED → ACTIVE (reinstate)` and terminal `TERMINATED`, with
+  invalid-transition rejection and stale-version (`412`) protection.
+- Activation authorization via pluggable adapters (`fail_closed` default,
+  `http` eligibility integration, `fixture` test-only).
+- Agent appointments aggregate with effective dates and status transitions.
+- Identity links: link/unlink/resolve external IdP `(issuer, subject)` →
+  agent, unique active mapping, revocation support. Keycloak `sub` is
+  never parsed as an agent ID.
+- Transactional outbox + Kafka transport (`EVENT_TRANSPORT=kafka` in DEV),
+  lease/fencing, retry, poison-message terminal handling.
+- Idempotency records for mutating operations.
+- JWT authn via Keycloak OIDC (`AUTH_MODE=jwt` in DEV); `AUTH_MODE=dev`
+  and `ACTIVATION_MODE=fixture` are restricted to `ENVIRONMENT=local`.
+- OpenAPI 3.1 via utoipa at `/api/docs/openapi.json`.
+
+Verification evidence: `tests/db_tests.rs` (real PostgreSQL 16: migrations,
+CRUD, outbox leasing/fencing/poison) and `tests/integration` smoke tests.
+See `AGENA_AGENT_SERVICE_COMPLETION_REPORT.md` for the full evidence matrix.
 
 ## Development Conventions
 
