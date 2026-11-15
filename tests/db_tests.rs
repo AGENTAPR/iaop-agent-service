@@ -7,9 +7,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn pool() -> PgPool {
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://postgres:340ce6f29651795482a97e89a2dd36b6f9336f60ef2ed6c4@127.0.0.1:5432/iaop_agent".into()
-    });
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set — no credentials are embedded in source");
     let pool = PgPool::connect(&url)
         .await
         .expect("failed to connect to iaop_agent database");
