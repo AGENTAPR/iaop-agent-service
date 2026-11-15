@@ -82,7 +82,6 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
         let environment = env_or("ENVIRONMENT", "local");
-        let is_production = environment.eq_ignore_ascii_case("production");
 
         let auth_mode = match env_or("AUTH_MODE", "jwt").as_str() {
             "jwt" => AuthMode::Jwt,
@@ -94,11 +93,7 @@ impl AppConfig {
                 ));
             }
         };
-        if auth_mode == AuthMode::DevBypass && is_production {
-            return Err(ConfigError::UnsafeConfig(
-                "AUTH_MODE=dev is forbidden when ENVIRONMENT=production".into(),
-            ));
-        }
+
         if auth_mode == AuthMode::Jwt {
             for var in ["OIDC_ISSUER", "OIDC_JWKS_URL", "OIDC_AUDIENCE"] {
                 if std::env::var(var).ok().filter(|s| !s.is_empty()).is_none() {
@@ -122,11 +117,7 @@ impl AppConfig {
                 ));
             }
         };
-        if activation_mode == ActivationMode::Fixture && is_production {
-            return Err(ConfigError::UnsafeConfig(
-                "ACTIVATION_MODE=fixture is forbidden when ENVIRONMENT=production".into(),
-            ));
-        }
+        validate_mode_safety(&environment, auth_mode, activation_mode)?;
 
         let event_transport = match env_or("EVENT_TRANSPORT", "log").as_str() {
             "log" => EventTransportKind::Log,
@@ -193,6 +184,29 @@ impl AppConfig {
     }
 }
 
+/// Unsafe-mode guard: `AUTH_MODE=dev` and `ACTIVATION_MODE=fixture` are
+/// test-only adapters permitted exclusively under `ENVIRONMENT=local`.
+/// Shared DEV/UAT/production must always run JWT auth and a real
+/// (fail-closed or HTTP) activation authorization path.
+fn validate_mode_safety(
+    environment: &str,
+    auth_mode: AuthMode,
+    activation_mode: ActivationMode,
+) -> Result<(), ConfigError> {
+    let isolated = environment.eq_ignore_ascii_case("local");
+    if auth_mode == AuthMode::DevBypass && !isolated {
+        return Err(ConfigError::UnsafeConfig(format!(
+            "AUTH_MODE=dev is forbidden when ENVIRONMENT={environment} (allowed only for ENVIRONMENT=local)"
+        )));
+    }
+    if activation_mode == ActivationMode::Fixture && !isolated {
+        return Err(ConfigError::UnsafeConfig(format!(
+            "ACTIVATION_MODE=fixture is forbidden when ENVIRONMENT={environment} (allowed only for ENVIRONMENT=local)"
+        )));
+    }
+    Ok(())
+}
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
@@ -211,9 +225,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dev_bypass_refused_in_production() {
-        // Simulate via direct struct logic: the guard is in from_env;
-        // test the parse-level invariant by checking the enum mapping.
-        assert_eq!(AuthMode::DevBypass, AuthMode::DevBypass);
+    fn unsafe_modes_rejected_outside_local() {
+        for env in ["development", "uat", "production", "staging"] {
+            assert!(
+                validate_mode_safety(env, AuthMode::DevBypass, ActivationMode::FailClosed).is_err(),
+                "AUTH_MODE=dev must be rejected for ENVIRONMENT={env}"
+            );
+            assert!(
+                validate_mode_safety(env, AuthMode::Jwt, ActivationMode::Fixture).is_err(),
+                "ACTIVATION_MODE=fixture must be rejected for ENVIRONMENT={env}"
+            );
+        }
+    }
+
+    #[test]
+    fn unsafe_modes_allowed_only_in_local() {
+        assert!(
+            validate_mode_safety("local", AuthMode::DevBypass, ActivationMode::Fixture).is_ok()
+        );
+        assert!(
+            validate_mode_safety("LOCAL", AuthMode::DevBypass, ActivationMode::FailClosed).is_ok()
+        );
+    }
+
+    #[test]
+    fn safe_modes_allowed_everywhere() {
+        for env in ["local", "development", "uat", "production"] {
+            assert!(validate_mode_safety(env, AuthMode::Jwt, ActivationMode::FailClosed).is_ok());
+            assert!(validate_mode_safety(env, AuthMode::Jwt, ActivationMode::Http).is_ok());
+        }
     }
 }
